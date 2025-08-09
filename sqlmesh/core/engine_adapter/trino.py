@@ -218,21 +218,27 @@ class TrinoEngineAdapter(
         columns_to_types: t.Dict[str, exp.DataType],
         batch_size: int,
         target_table: TableName,
+        source_columns: t.Optional[t.List[str]] = None,
     ) -> t.List[SourceQuery]:
         import pandas as pd
         from pandas.api.types import is_datetime64_any_dtype  # type: ignore
 
         assert isinstance(df, pd.DataFrame)
+        source_columns = source_columns or list(columns_to_types)
 
         # Trino does not accept timestamps in ISOFORMAT that include the "T". `execution_time` is stored in
         # Pandas with that format, so we convert the column to a string with the proper format and CAST to
         # timestamp in Trino.
         for column, kind in (columns_to_types or {}).items():
+            if column not in source_columns:
+                continue
             dtype = df.dtypes[column]
             if is_datetime64_any_dtype(dtype) and getattr(dtype, "tz", None) is not None:
                 df[column] = pd.to_datetime(df[column]).map(lambda x: x.isoformat(" "))
 
-        return super()._df_to_source_queries(df, columns_to_types, batch_size, target_table)
+        return super()._df_to_source_queries(
+            df, columns_to_types, batch_size, target_table, source_columns=source_columns
+        )
 
     def _build_schema_exp(
         self,
@@ -266,6 +272,7 @@ class TrinoEngineAdapter(
         table_description: t.Optional[str] = None,
         column_descriptions: t.Optional[t.Dict[str, str]] = None,
         truncate: bool = False,
+        source_columns: t.Optional[t.List[str]] = None,
         **kwargs: t.Any,
     ) -> None:
         if columns_to_types and self.current_catalog_type == "delta_lake":
@@ -287,6 +294,7 @@ class TrinoEngineAdapter(
             table_description,
             column_descriptions,
             truncate,
+            source_columns,
             **kwargs,
         )
 
