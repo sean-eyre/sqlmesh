@@ -165,9 +165,11 @@ def get_range_of_a_key_in_model_block(
     sql: str,
     dialect: str,
     key: str,
-) -> t.Optional[Range]:
+) -> t.Optional[t.Tuple[Range, Range]]:
     """
-    Get the range of a specific key in the model block of an SQL file.
+    Get the ranges of a specific key and its value in the MODEL block of an SQL file.
+
+    Returns a tuple of (key_range, value_range) if found, otherwise None.
     """
     tokens = tokenize(sql, dialect=dialect)
     if not tokens:
@@ -237,17 +239,110 @@ def get_range_of_a_key_in_model_block(
         if depth == 1 and tt is TokenType.VAR and tok.text.upper() == key.upper():
             # Validate key position: it should immediately follow '(' or ',' at top level
             prev_idx = i - 1
-            # Skip over non-significant tokens we don't want to gate on (e.g., comments)
+            # Skip comments
             while prev_idx >= 0 and tokens[prev_idx].token_type in (TokenType.COMMENT,):
                 prev_idx -= 1
             prev_tt = tokens[prev_idx].token_type if prev_idx >= 0 else None
-            if prev_tt in (TokenType.L_PAREN, TokenType.COMMA):
-                position = TokenPositionDetails(
-                    line=tok.line,
-                    col=tok.col,
-                    start=tok.start,
-                    end=tok.end,
-                )
-                return position.to_range(sql.splitlines())
+            if prev_tt not in (TokenType.L_PAREN, TokenType.COMMA):
+                continue
+
+            # Key range
+            lines = sql.splitlines()
+            key_start = TokenPositionDetails(
+                line=tok.line, col=tok.col, start=tok.start, end=tok.end
+            )
+            key_range = key_start.to_range(lines)
+
+            # Find value start: the next non-comment token after the key
+            value_start_idx = i + 1
+            while value_start_idx < rparen_idx and tokens[value_start_idx].token_type in (
+                TokenType.COMMENT,
+            ):
+                value_start_idx += 1
+            if value_start_idx >= rparen_idx:
+                return None
+
+            # Walk to the end of the value expression: until top-level comma or closing paren
+            # Track internal nesting for (), [], {}
+            nested = 0
+            j = value_start_idx
+            value_end_idx = value_start_idx
+
+            def is_open(t: TokenType) -> bool:
+                return t in (TokenType.L_PAREN, TokenType.L_BRACE, TokenType.L_BRACKET)
+
+            def is_close(t: TokenType) -> bool:
+                return t in (TokenType.R_PAREN, TokenType.R_BRACE, TokenType.R_BRACKET)
+
+            while j < rparen_idx:
+                ttype = tokens[j].token_type
+                if ttype is TokenType.COMMENT:
+                    j += 1
+                    continue
+                if is_open(ttype):
+                    nested += 1
+                elif is_close(ttype):
+                    nested -= 1
+
+                # End of value: at top-level (nested == 0) encountering a comma or the end paren
+                if nested == 0 and (
+                    ttype is TokenType.COMMA or (ttype is TokenType.R_PAREN and depth == 1)
+                ):
+                    # For comma, don't include it in the value range
+                    # For closing paren, include it only if it's part of the value structure
+                    if ttype is TokenType.COMMA:
+                        # Don't include the comma in the value range
+                        break
+                    else:
+                        # Include the closing parenthesis in the value range
+                        value_end_idx = j
+                        break
+
+                value_end_idx = j
+                j += 1
+
+            # Special case: if the value ends with a closing parenthesis that's part of the value
+            # (not the MODEL block's closing parenthesis), we need to include it
+            if value_end_idx < rparen_idx - 1:
+                next_token = tokens[value_end_idx + 1]
+                if next_token.token_type is TokenType.COMMA:
+                    # Value ends before the comma, which is correct
+                    pass
+                elif next_token.token_type is TokenType.R_PAREN and depth == 1:
+                    # This is the MODEL block's closing parenthesis, don't include it
+                    pass
+                else:
+                    # Check if we should extend the range to include more tokens
+                    # This handles cases like incomplete parsing
+                    pass
+
+            # Trim trailing comments from value end
+            while (
+                value_end_idx > value_start_idx
+                and tokens[value_end_idx].token_type is TokenType.COMMENT
+            ):
+                value_end_idx -= 1
+
+            value_start_tok = tokens[value_start_idx]
+            value_end_tok = tokens[value_end_idx]
+
+            value_start_pos = TokenPositionDetails(
+                line=value_start_tok.line,
+                col=value_start_tok.col,
+                start=value_start_tok.start,
+                end=value_start_tok.end,
+            )
+            value_end_pos = TokenPositionDetails(
+                line=value_end_tok.line,
+                col=value_end_tok.col,
+                start=value_end_tok.start,
+                end=value_end_tok.end,
+            )
+            value_range = Range(
+                start=value_start_pos.to_range(lines).start,
+                end=value_end_pos.to_range(lines).end,
+            )
+
+            return (key_range, value_range)
 
     return None
