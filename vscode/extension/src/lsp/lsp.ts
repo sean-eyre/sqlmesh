@@ -110,7 +110,7 @@ export class LSPClient implements Disposable {
         args: sqlmesh.value.args,
       },
     }
-    const paths = resolveProjectPath(getWorkspaceFolders()[0])
+    const paths = resolveProjectPath(workspaceFolders[0])
     if (isErr(paths)) {
       traceError(`Failed to resolve project paths: ${paths.error}`)
       return err({ type: 'generic', message: paths.error })
